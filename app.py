@@ -30,11 +30,11 @@ logger = logging.getLogger(__name__)
 # State definitions for top level conversation
 SELECTING_ACTION, CREATING_SPREE, SEARCH_SPREE, SEARCHING, USER_SPREES, START_CREATE_SPREE= map(chr, range(6))
 # State definitions for second level conversation
-SAVE_SPREE, CREATE_SPREE_MENU = map(chr, range(6, 8))
+SAVE_SPREE, CREATE_SPREE_MENU, JOIN_SPREE_TYPING = map(chr, range(6, 9))
 # State definitions for descriptions conversation
-SELECTING_FIELD, TYPING_FIELD= map(chr, range(8, 10))
+SELECTING_FIELD, TYPING_FIELD= map(chr, range(9, 11))
 # Meta states
-STOPPING, SHOWING = map(chr, range(10, 12))
+STOPPING, SHOWING = map(chr, range(11, 13))
 # Shortcut for ConversationHandler.END
 END = ConversationHandler.END
 
@@ -45,9 +45,10 @@ END = ConversationHandler.END
 global bot
 global TOKEN
 current_field = None
+current_spree_id = None
 current_spree = MySpree(spree_name=None, min_amount=None, current_amount=None)
 
-TOKEN = ''
+TOKEN = '1022803073:AAF2Rf3EY4eXKMcs7HIBCgm-5J-q31nXS-c'
 #TOKEN = os.environ.get('TOKEN')
 bot = telegram.Bot(TOKEN)
 
@@ -117,22 +118,51 @@ def search_results(update, context):
      context.user_data[START_OVER] = True
      return SHOWING
 
-def join_spree(update, context):
-    spree_id = update.callback_query.data
-    print('joining: ' + spree_id)
 
+def join_spree_ask_for_amount(update, context):
+    global current_spree_id
+
+    current_spree_id = update.callback_query.data
     # add user  to spree id here
-    spree_ref = db.collection(u'Sprees').document(spree_id)
-    spree_obj = spree_ref.get().to_dict()
-    user_name = update.effective_user['username']
-    total_people = spree_obj.get('total_people')
-    total_people.append(user_name)
-    people_num = spree_obj.get('people_num') + 1
-    spree_ref.set({u'total_people': total_people, u'people_num' : people_num}, merge=True)
+    update.callback_query.edit_message_text(text="Okay, please enter your amount below!")
+    bot.sendMessage(chat_id=update.effective_user['id'], text='Please enter your spending amount:')
 
-    update.callback_query.edit_message_text(text="Joined Spree!")
+    return JOIN_SPREE_TYPING
 
-    return SHOWING
+def join_spree_get_amount(update, context):
+    global current_spree_id
+
+    text = update.message.text
+    validation = Validation(None)
+    validation_result = validation.isValidAmount(text)
+    if validation_result == "":
+        buttons = [[
+                InlineKeyboardButton(text='Back', callback_data=str(END))
+        ]]
+        keyboard = InlineKeyboardMarkup(buttons)
+        update.message.reply_text(text='Successfully joined Spree!', reply_markup=keyboard)
+        amt = "%.2f" % (float(text))
+        
+        user_name = update.effective_user['username']
+        spree_ref = db.collection(u'Sprees').document(current_spree_id)
+        spree_obj = spree_ref.get().to_dict()
+        total_people = spree_obj.get('total_people')
+        total_people.append(user_name)
+        people_num = spree_obj.get('people_num') + 1
+        
+        curr_amt = spree_obj.get('current_amount') + float(amt)
+        remaining_amt = spree_obj.get('remaining_amount') - float(amt)
+        spree_ref.set({u'total_people': total_people, u'people_num' : people_num, u'current_amount' : curr_amt, u'remaining_amount' : remaining_amt}, merge=True)
+        
+        if remaining_amt <= 0 : 
+            #send shit here
+
+            spree_ref.delete()
+        
+        current_spree_id = None
+        return SHOWING
+    else:
+        bot.sendMessage(chat_id=update.effective_user['id'], text=validation_result)
 
 
 
@@ -327,8 +357,9 @@ def main():
         states={
             SHOWING: [
                 CallbackQueryHandler(start, pattern='^' + str(END) + '$'),
-                CallbackQueryHandler(join_spree, pattern='^(?!' + str(END) + ').*$'),
+                CallbackQueryHandler(join_spree_ask_for_amount, pattern='^(?!' + str(END) + ').*$'),
             ],
+            JOIN_SPREE_TYPING: [MessageHandler(Filters.text, join_spree_get_amount)],
             SELECTING_ACTION: [
                 CallbackQueryHandler(search_spree, pattern='^' + str(SEARCH_SPREE) + '$'),
                 CallbackQueryHandler(start_create_spree, pattern='^' + str(START_CREATE_SPREE) + '$'),
